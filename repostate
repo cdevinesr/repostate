@@ -1,0 +1,187 @@
+#!/bin/bash
+
+# Remember IFS setting for easy reversion of changes.
+OIFS="${IFS}"
+
+# Color definitions
+RED=$'\e[1;31m'
+GREEN=$'\e[1;32m'
+DARKGREEN=$'\e[0;32m'
+YELLOW=$'\e[1;33m'
+BLUE=$'\e[1;34m'
+MAGENTA=$'\e[1;35m'
+CYAN=$'\e[1;36m'
+DARKCYAN=$'\e[0;36m'
+WHITE=$'\e[1;37m'
+RESET=$'\e[0m'
+
+# Regex patterns
+UNTRACKED="Untracked files"
+PENDING_CHANGES="Changes not staged for commit"
+STAGED_CHANGES="Changes to be committed"
+REBASE="rebas(e|ing)"
+HAS_CONFLICTS="fix conflicts and then"
+DETACHED_HEAD="HEAD detached at ([^${IFS}]*)"
+
+# Determine Git version and store it.
+# GITMAJOR - Major version
+# GITMINOR - Minor version
+# GITPATCH - Patch version
+# 'git version MAJOR.MINOR.PATCH'
+IFS='.' read GIT{MAJOR,MINOR,PATCH} < <(git --version | grep -Po "(?<=git version ).*")
+
+# Handle directory argument, if provided.
+SCANDIR="${1}"
+[ -z "${SCANDIR}" ] && SCANDIR="${PWD}"
+
+if [ ! -e "${SCANDIR}" ]; then
+    echo "ERROR: '${SCANDIR}' does not exist."
+    exit 1
+fi
+
+if [ ! -d "${SCANDIR}" ]; then
+    echo "ERROR: '${SCANDIR}' is not a directory."
+    exit 1
+fi
+
+if [ ! -r "${SCANDIR}" ]; then
+    echo "ERROR: '${SCANDIR}' is not readable."
+    exit 1
+fi
+
+if [ ! -x "${SCANDIR}" ]; then
+    echo "ERROR: '${SCANDIR}' is not traversable."
+    exit 1
+fi
+
+SCANDIR=$(readlink -f "${SCANDIR}")
+
+# Build array of Git repositories
+IFS=$'\n'
+
+REPOS=($(find "${SCANDIR}" -type d -name '.git' -print | sort))
+
+IFS="${OIFS}"
+
+# Stop if no repos were found.
+if [ "${#REPOS[@]}" -eq 0 ]; then
+    echo "No repositories found under ${SCANDIR}"
+    exit 0
+fi
+
+# And now for the heavy lifting.
+BUFFER=""
+counter=0
+
+for repo in "${REPOS[@]}"
+do
+    let counter+=1
+    repodir="${repo%/.git}"
+    cd "${repodir}"
+    echo -n "Currently processing ${counter}/${#REPOS[@]}: ${repodir} ..."
+
+    BUFFER+="${YELLOW}Repository: ${RESET}${repodir}"$'\n\n'
+
+    BUFFER+="${YELLOW}Remotes:${RESET}"$'\n'
+
+    remotes=($(git remote))
+
+    if [ "${#remotes[@]}" -eq 0 ]; then
+        BUFFER+=$'-\n\n'
+    else
+        for remote in "${remotes[@]}"
+        do
+            remote_url=$(git config --get remote.${remote}.url)
+            BUFFER+="${remote} (${remote_url:-None})"$'\n'
+        done
+
+        BUFFER+=$'\n'
+    fi
+
+    BUFFER+="${YELLOW}Branches:${RESET}"$'\n'
+
+    IFS=$'\n'
+    branches=($(git branch -vv --color=never))
+    IFS="${OIFS}"
+
+    for branch in "${branches[@]:--}"
+    do
+        if [ "${branch}" == "-" ]; then
+            BUFFER+=$'-\n'
+        else
+            set -o noglob
+            set ${branch}
+            set +o noglob
+
+            if [ "${1}" == "*" ]; then
+                shift
+                BUFFER+="${DARKGREEN}${1}${RESET}*"
+            else
+                BUFFER+="${1}"
+            fi
+
+            commits_ahead=$(grep -Po "(?<=[:,] ahead )[0-9]+" <<<"${branch}")
+            commits_behind=$(grep -Po "(?<=[:,] behind )[0-9]+" <<<"${branch}")
+
+            BUFFER+=" - ${BLUE}Ref: ${RESET}${2}"
+
+            upstream=$(grep -Po "(?<=\[).*?(?=[\]:])" <<<"${branch}")
+            BUFFER+=", ${BLUE}Upstream:${RESET} ${upstream:--}"
+
+            if [ -n "${upstream}" ]; then
+                BUFFER+=" ${DARKCYAN}[+${commits_ahead:=0}/-${commits_behind:=0}]${RESET}"
+
+                if [ "${commits_ahead}" -gt 0 ] && [ "${commits_behind}" -gt 0 ]; then
+                    BUFFER+=" ${RED}divergent${RESET}"
+                fi
+            fi
+
+            BUFFER+=$'\n'
+        fi
+    done
+
+    BUFFER+=$'\n'
+
+    gitstatus="$(git status 2> /dev/null)"
+
+    # Need to support a workaround for date-sorting tags since git for-each-ref
+    # sort support wasn't added to git tag until 2.7.0.
+    if [ "${GITMAJOR}" -gt 2 ] || { [ "${GITMAJOR}" -eq 2 ] && [ "${GITMINOR}" -ge 7 ]; }; then
+        latest_tags=($(git tag -l --sort='-taggerdate' | head -5))
+    else
+        latest_tags=($(git for-each-ref --sort='-taggerdate' --format='%(refname)' refs/tags | head -5 | awk -F/ '{ print $NF }'))
+    fi
+
+    BUFFER+="${YELLOW}Most Recent Tags (up to 5):${RESET}"$'\n'
+
+    for tag in ${latest_tags[@]:--}
+    do
+        BUFFER+="${tag}"$'\n'
+    done
+
+    BUFFER+=$'\n'"${YELLOW}Working Directory Notes:${RESET}"$'\n'
+    WDNOTES=""
+    [[ "${gitstatus}" =~ ${DETACHED_HEAD} ]] && WDNOTES+="HEAD detached at ${BASH_REMATCH[1]}"$'\n'
+    [[ "${gitstatus}" =~ ${UNTRACKED} ]] && WDNOTES+=$'Untracked files\n'
+    [[ "${gitstatus}" =~ ${PENDING_CHANGES} ]] && WDNOTES+=$'Unstaged changes\n'
+    [[ "${gitstatus}" =~ ${STAGED_CHANGES} ]] && WDNOTES+=$'Staged but uncommitted changes\n'
+    [[ "${gitstatus}" =~ ${REBASE} ]] && WDNOTES+=$'Rebase in progress\n'
+    [[ "${gitstatus}" =~ ${HAS_CONFLICTS} ]] && WDNOTES+=$'Merge conflict(s)\n'
+
+    if [ -n "${WDNOTES}" ]; then
+        BUFFER+="${WDNOTES}"
+    else
+        BUFFER+=$'-\n'
+    fi
+
+    BUFFER+=$'\n'"${RED}-------------------------${RESET}"$'\n\n'
+    echo -n $'\r\e[2K'
+done
+
+if which less &> /dev/null; then
+    head -n-4 <<<"${BUFFER}" | less -r
+else
+    head -n-3 <<<"${BUFFER}"
+fi
+
+exit 0
