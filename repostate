@@ -144,19 +144,18 @@ do
 
     gitstatus="$(git status 2> /dev/null)"
 
-    # Need to support a workaround for date-sorting tags since git for-each-ref
-    # sort support wasn't added to git tag until 2.7.0.
-    if [ "${GITMAJOR}" -gt 2 ] || { [ "${GITMAJOR}" -eq 2 ] && [ "${GITMINOR}" -ge 7 ]; }; then
-        latest_tags=($(git tag -l --sort='-taggerdate' | head -5))
-    else
-        latest_tags=($(git for-each-ref --sort='-taggerdate' --format='%(refname)' refs/tags | head -5 | awk -F/ '{ print $NF }'))
-    fi
+    latest_tags=($(git for-each-ref --sort='-taggerdate' --format='%(refname:short)|%(*objectname:short)' refs/tags | head -5))
 
     BUFFER+="${YELLOW}Most Recent Tags (up to 5):${RESET}"$'\n'
 
-    for tag in ${latest_tags[@]:--}
+    for tagline in ${latest_tags[@]:--}
     do
-        BUFFER+="${tag}"$'\n'
+        if [ "${tagline}" == "-" ]; then
+            BUFFER+=$'-\n'
+        else
+            IFS="|" read tag refid <<<"${tagline}"
+            BUFFER+="${tag} - ${BLUE}Ref: ${RESET}${refid}"$'\n'
+        fi
     done
 
     BUFFER+=$'\n'"${YELLOW}Working Directory Notes:${RESET}"$'\n'
