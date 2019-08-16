@@ -180,7 +180,14 @@ do
 done
 
 if which less &> /dev/null; then
-    head -n-4 <<<"${BUFFER}" | less -r
+    OUTLINES=$(head -n-4 <<<"${BUFFER}" | wc -l)
+    TERMLINES=$(tput lines)
+
+    if [ "${OUTLINES}" -ge "${TERMLINES}" ]; then
+        head -n-4 <<<"${BUFFER}" | less -r
+    else
+        head -n-3 <<<"${BUFFER}"
+    fi
 else
     head -n-3 <<<"${BUFFER}"
 fi
